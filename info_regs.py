@@ -112,10 +112,12 @@ processor registers involved during the context switch.'''
         for task, name, thread_regs in data:
             outfd.write("Process Name: {} - PID: {}\n".format(name, str(task.pid)))
             outfd.write("Registers (per thread):\n")
+            fmt = str(2*self.reg_size)
             for thread_name, regs in thread_regs:
                 outfd.write("  Thread Name: {}\n".format(thread_name))
                 for reg, value in regs.items():
-                    outfd.write("    {:8s}: {:016x}\n".format(reg, value))
+                    
+                    outfd.write(("    {:8s}: {:0" + fmt + "x}\n").format(reg, value))
             # code here for displaying the registers
 
 
@@ -127,7 +129,7 @@ processor registers involved during the context switch.'''
             addr = sp0
 
             for reg in self.offsets[::-1]: # reverse list, because we read up in the stack
-                debug.info("Reading {:016x}".format(addr))
+                #debug.info("Reading {:016x}".format(addr))
                 addr -= self.reg_size
                 val_raw = self.addr_space.read(addr, self.reg_size)
                 val = struct.unpack(self.fmt, val_raw)[0]
