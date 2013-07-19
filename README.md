@@ -21,6 +21,8 @@ linux_info_regs
 ---------------
 
 Displays the CPU registers as saved on the kernel stack, per thread.
+Does not display registers for kernel threads, because this has not been tested.
+
 Written in collaboration with emd3l.
 
 Depends: linux_threads

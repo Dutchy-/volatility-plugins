@@ -96,13 +96,13 @@ processor registers involved during the context switch.'''
 
     def calculate(self):
         for task, (thread_group, threads) in linux_threads.linux_threads(self._config).calculate():
-	    name = self.get_task_name(task)
+            name = task.get_commandline()
             thread_registers = []
             for thread_task in threads:
-                    thread_name = thread_task.comm
-	            regs = self.parse_kernel_stack(thread_task)
-                    thread_registers.append((thread_name,regs))
-	    yield task, name, thread_registers
+                thread_name = thread_task.comm
+                regs = self.parse_kernel_stack(thread_task)
+                thread_registers.append((thread_name,regs))
+            yield task, name, thread_registers
 
 
     def render_text(self, outfd, data):
@@ -115,16 +115,16 @@ processor registers involved during the context switch.'''
             fmt = str(2*self.reg_size)
             for thread_name, regs in thread_regs:
                 outfd.write("  Thread Name: {}\n".format(thread_name))
-                for reg, value in regs.items():
-                    
-                    outfd.write(("    {:8s}: {:0" + fmt + "x}\n").format(reg, value))
-            # code here for displaying the registers
+                if regs != None:
+                    for reg, value in regs.items():
+
+                        outfd.write(("    {:8s}: {:0" + fmt + "x}\n").format(reg, value))
 
 
     def parse_kernel_stack(self, task):
         result = collections.OrderedDict()
         if task.mm:
-	    sp0 = task.thread.sp0 
+            sp0 = task.thread.sp0
             #proc_as = task.get_process_address_space()
             addr = sp0
 
@@ -134,25 +134,5 @@ processor registers involved during the context switch.'''
                 val_raw = self.addr_space.read(addr, self.reg_size)
                 val = struct.unpack(self.fmt, val_raw)[0]
                 result[reg] = val
-        return result
-            
-
-    def get_task_name(self, task):
-
-        if task.mm:
-            # set the as with our new dtb so we can read from userland
-            proc_as = task.get_process_address_space()
-
-            # read argv from userland
-            start = task.mm.arg_start.v()
-
-            argv = proc_as.read(start, task.mm.arg_end - task.mm.arg_start)
-
-            # split the \x00 buffer into args
-            name = " ".join(argv.split("\x00"))
-
-        else:
-            # kernel thread
-            name = "[" + task.comm + "]"
-
-        return name
+            return result
+        return None
