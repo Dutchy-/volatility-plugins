@@ -69,7 +69,9 @@ The main part of my research, it does analysis of the stack. Main features:
  - Find return addresses on the stack.
  - Calculate function addresses from return addresses.
  - Match function addresses to (dynamic) symbols.
- - Depends on linux_process_info
+
+Depends: linux_process_info
+
 Only works on x86_64 (due to disassembling code). Normal output is fairly basic. This plugin is the most important
 part of my research, but has limited practical use. Still depends on my old register code, not on my earlier released
 linux_info_regs.
