@@ -39,10 +39,24 @@ stats['threads_zero_frames'] = 0
 stats['libc_start'] = 0
 stats['main'] = 0
 
+stats['oldschool_frames'] = 0
+stats['newschool_frames'] = 0
+
 stats['frames'] = {}
 stats['frames']['possible_frames'] = 0
 stats['frames']['function_address'] = 0
 stats['frames']['symbols'] = 0
+stats['frames']['regcall'] = 0
+stats['frames']['unknown_error'] = 0
+stats['frames']['parse_error'] = 0
+stats['frames']['no_instr'] = 0
+
+stats['frames']['callsize'] = {}
+stats['frames']['callsize'][1] = 0
+stats['frames']['callsize'][2] = 0
+stats['frames']['callsize'][3] = 0
+stats['frames']['callsize'][4] = 0
+stats['frames']['callsize'][5] = 0
 
 # stats['syscall'] = {}
 # stats['syscall']['total'] = 0
@@ -340,7 +354,7 @@ class linux_process_stack(linux_process_info.linux_process_info):
             frame.symbol = self.find_function_symbol(task, frame.function)
 
             stats['frames']['possible_frames'] += 1
-            if frame.function:
+            if frame.function != None:
                 stats['frames']['function_address'] += 1
             if frame.symbol:
                 stats['frames']['symbols'] += 1
@@ -364,7 +378,7 @@ class linux_process_stack(linux_process_info.linux_process_info):
         @return: a list of frames
         """
         frames = []
-
+        stats['oldschool_frames'] += 1
         address_size = linux_process_info.address_size
         rbp = registers.rbp
         rsp_value = read_address(proc_as, registers.rsp)
@@ -407,6 +421,7 @@ class linux_process_stack(linux_process_info.linux_process_info):
         @param end: End address
         @return: a list of frames
         """
+        stats['newschool_frames'] += 1
         address_size = linux_process_info.address_size
         frames = []
         debug.info("Scan range (%rsp to end) = (0x{:016x} to 0x{:016x})".format(address, end))
@@ -467,16 +482,22 @@ class linux_process_stack(linux_process_info.linux_process_info):
         @return True or False
         """
         proc_as = process_info.proc_as
-        size = 5
+
         if distorm_loaded and process_info.is_code_pointer(address):
-            offset = address - size
-            instr = distorm3.Decode(offset, proc_as.read(offset, size), self.decode_as)
-            # last instr, third tuple item (instr string), first 7 letters
-            # if instr[-1][2][:7] == 'CALL 0x':
-            #     print(instr[-1][2])
-            if len(instr) > 0:
-                return instr[-1][2][:4] == 'CALL'
-            # there's also call <register>
+            result = False
+            # CALL reg is 2 bytes
+            # CALL 0xaddress is 5 bytes
+            for size in range(1,6):
+                offset = address - size
+                instr = distorm3.Decode(offset, proc_as.read(offset, size), self.decode_as)
+
+                #if size == 2 and len(instr) > 0 and instr[-1][2][:4] == 'CALL':
+                #    print("Register here! " + str(address) + " " + str(instr))
+
+                if len(instr) > 0 and instr[-1][2][:4] == 'CALL':
+                    #print(instr)
+                    stats['frames']['callsize'][size] += 1
+                    return True
         return False
 
     def find_return_libc_start(self, proc_as, start_stack, return_start):
@@ -684,18 +705,27 @@ class linux_process_stack(linux_process_info.linux_process_info):
         if distorm_loaded:
             decode_as = self.decode_as
             retaddr_assembly = distorm3.Decode(ret_addr - 5, proc_as.read(ret_addr - 5, 5), decode_as)
+
             if len(retaddr_assembly) == 0:
                 return None
+
             #print(retaddr_assembly)
             retaddr_assembly = retaddr_assembly[0] # We're only getting 1 instruction
             # retaddr_assembly[2] = "CALL 0x400620"
             instr = retaddr_assembly[2].split(' ')
             #print(instr)
             if instr[0] == 'CALL':
-                try:
-                    target = int(instr[1][2:], 16)
-                except ValueError:
+                if instr[1] == 'QWORD':
+                    stats['frames']['regcall'] += 1
                     return None
+                else:
+                    try:
+                        target = int(instr[1][2:], 16)
+                    except ValueError:
+                        #print("Register here? " + str(ret_addr) + " " + str(instr))
+                        print("Parse error? {}".format(instr))
+                        stats['frames']['parse_error'] += 1
+                        return None
                 bytes = proc_as.read(target, 6)
                 if not bytes:
                     # We're not sure if this is the function address
@@ -718,6 +748,7 @@ class linux_process_stack(linux_process_info.linux_process_info):
                     debug.info("Found function address from instruction {} at offset 0x{:016x}".format(instr2, target))
                     if proc_as.is_valid_address(final_addr):
                         return read_address(proc_as, final_addr)
+                    print("Register here? maybe" + str(final_addr) + " " + str(ret_addr) + " " + str(instr) + " " + str(instr2))
                     return None
                 elif instr2[0] == 'PUSH' and instr2[1] == 'RBP':
                     # This is an internal function
@@ -727,6 +758,21 @@ class linux_process_stack(linux_process_info.linux_process_info):
                     # In case push rbp is removed
                     debug.info("Found function address from instruction {} at offset 0x{:016x}".format(instr, target))
                     return target
+            #print("Register here? it was not CALL? " + str(ret_addr) + " " + str(instr))
+            else:
+                old = retaddr_assembly
+                i = 2
+                found = False
+                while i < 5 and not found:
+                    retaddr_assembly = distorm3.Decode(ret_addr - i, proc_as.read(ret_addr - i, i), decode_as)
+                    if len(retaddr_assembly[-1]) > 2 and len(retaddr_assembly[-1][2]) > 3 and retaddr_assembly[-1][2][:4] == 'CALL':
+                        found = True
+                        stats['frames']['regcall'] += 1
+                    i+=1
+                if not found:
+                    print("Call wtf? {}".format(old))
+                    stats['frames']['unknown_error'] += 1
+
             return None
         else:
             return None
@@ -851,7 +897,7 @@ class stack_frame(object):
         rep += "Saved registers:\n"
         rep += "\tebp at 0x{:016x}: 0x{:016x}\n".format(self.ebp_address, self.ebp)
         rep += "\teip at 0x{:016x}: 0x{:016x} (Return Address)\n".format(self.ret_address, self.ret)
-        if self.function:
+        if self.function != None:
             rep += "Frame function address: {:016x}\n".format(self.function)
         if self.symbol:
             rep += "Frame function symbol: {}\n".format(self.symbol)
