@@ -58,6 +58,13 @@ stats['frames']['callsize'][3] = 0
 stats['frames']['callsize'][4] = 0
 stats['frames']['callsize'][5] = 0
 
+stats['frames']['processregs'] = {}
+stats['frames']['processframes'] = {}
+stats['frames']['libraryregs'] = {}
+stats['frames']['processbrokenframes'] = {}
+
+
+
 # stats['syscall'] = {}
 # stats['syscall']['total'] = 0
 
@@ -129,13 +136,11 @@ class linux_process_stack(linux_process_info.linux_process_info):
         #         'libtestlibrary.so' : {0x6f0 : 'function_one', 0x71e : 'function_two'}
         #     }
         # print(self.symbols)
+        debug.setup(-20)
         if distorm_loaded:
             self.decode_as = distorm3.Decode32Bits if linux_process_info.address_size == 4 else distorm3.Decode64Bits
         else:
             debug.error("You really need the distorm3 python module for this plugin to function properly.")
-
-
-
 
     def load_symbols(self, dir):
         """
@@ -203,7 +208,6 @@ class linux_process_stack(linux_process_info.linux_process_info):
             else:
                 stats['tasks_ignored'] += 1
 
-
     def analyze_stack(self, process_info, task, thread_number):
         """
         Analyzes the stack, building the stack frames and performing validation
@@ -215,6 +219,10 @@ class linux_process_stack(linux_process_info.linux_process_info):
         # shortcut variables
         p = process_info
         i = thread_number
+
+        stats['frames']['processregs'][task.pid] = 0
+
+        stats['frames']['processbrokenframes'][task.pid] = 0
 
         is_thread = i != 0 # only the first thread has stack arguments etc
 
@@ -350,7 +358,7 @@ class linux_process_stack(linux_process_info.linux_process_info):
 
         for frame in frames:
             if not frame.function:
-                frame.function = self.find_function_address(p.proc_as, frame.ret)
+                frame.function = self.find_function_address(p.proc_as, frame.ret, task.pid, task)
             frame.symbol = self.find_function_symbol(task, frame.function)
 
             stats['frames']['possible_frames'] += 1
@@ -367,6 +375,7 @@ class linux_process_stack(linux_process_info.linux_process_info):
             else:
                 stats['tasks_zero_frames'] += 1
         #self.validate_stack_frames(frames)
+        stats['frames']['processframes'][task.pid] = len(frames)
         return p, p.thread_registers[i], frames
 
     def find_oldschool_frames(self, p, proc_as, registers):
@@ -473,7 +482,6 @@ class linux_process_stack(linux_process_info.linux_process_info):
         # for frame in to_remove:
         #     frames.remove(frame)
 
-
     def is_return_address(self, address, process_info):
         """
         Checks if the address is a return address by checking if the preceding instruction is a 'CALL'.
@@ -495,7 +503,6 @@ class linux_process_stack(linux_process_info.linux_process_info):
                 #    print("Register here! " + str(address) + " " + str(instr))
 
                 if len(instr) > 0 and instr[-1][2][:4] == 'CALL':
-                    #print(instr)
                     stats['frames']['callsize'][size] += 1
                     return True
         return False
@@ -625,7 +632,6 @@ class linux_process_stack(linux_process_info.linux_process_info):
         debug.info("Scanned {} libc addresses on the stack, did not find the main return address".format(counter))
         debug.info("Of these addresses, {} were invalid (e.g. due to swap)".format(invalid))
 
-
     def find_locals_size(self, proc_as, frames):
         """
         Find the size of the locals of the function, similar to GDB's prologue analysis.
@@ -694,7 +700,7 @@ class linux_process_stack(linux_process_info.linux_process_info):
                     break
         return None
 
-    def find_function_address(self, proc_as, ret_addr):
+    def find_function_address(self, proc_as, ret_addr, pid = 0, task = None):
         """
         Calculates the function address given a return address. Disassembles code to get through the double indirection
         introduced by the Linux PLT.
@@ -702,6 +708,19 @@ class linux_process_stack(linux_process_info.linux_process_info):
         @param ret_addr: Return address
         @return The function address or None
         """
+
+        def stats_regcall(address):
+            m = self.get_map(task, address)
+            offset = address - m.vm_start
+            name = linux_common.get_path(task, m.vm_file)
+            if name not in stats['frames']['libraryregs'].keys():
+                stats['frames']['libraryregs'][name] = {}
+
+            if offset not in stats['frames']['libraryregs'][name].keys():
+                stats['frames']['libraryregs'][name][offset] = 0
+
+            stats['frames']['libraryregs'][name][offset] += 1
+
         if distorm_loaded:
             decode_as = self.decode_as
             retaddr_assembly = distorm3.Decode(ret_addr - 5, proc_as.read(ret_addr - 5, 5), decode_as)
@@ -716,6 +735,7 @@ class linux_process_stack(linux_process_info.linux_process_info):
             #print(instr)
             if instr[0] == 'CALL':
                 if instr[1] == 'QWORD':
+                    stats_regcall(ret_addr-5)
                     stats['frames']['regcall'] += 1
                     return None
                 else:
@@ -767,10 +787,13 @@ class linux_process_stack(linux_process_info.linux_process_info):
                     retaddr_assembly = distorm3.Decode(ret_addr - i, proc_as.read(ret_addr - i, i), decode_as)
                     if len(retaddr_assembly[-1]) > 2 and len(retaddr_assembly[-1][2]) > 3 and retaddr_assembly[-1][2][:4] == 'CALL':
                         found = True
+                        stats_regcall(ret_addr-i)
+                        stats['frames']['processregs'][pid] += 1
                         stats['frames']['regcall'] += 1
                     i+=1
                 if not found:
-                    print("Call wtf? {}".format(old))
+                    #print("Call wtf? {}".format(old))
+                    stats['frames']['processbrokenframes'][pid] += 1
                     stats['frames']['unknown_error'] += 1
 
             return None
@@ -811,10 +834,30 @@ class linux_process_stack(linux_process_info.linux_process_info):
             #self.render_registers(reg)
             debug.info("Found {} frames!".format(len(frames)))
             debug.info("")
-            print(frames)
+            #print(frames)
             if self.dump_file:
                 self.write_annotated_stack(self.dump_file, self.calculate_annotations(frames))
         print(stats)
+        maxperc = 0
+        minperc = 100
+        for pid, totalframes in stats['frames']['processframes'].items():
+            frames = totalframes-stats['frames']['processbrokenframes'][pid]
+            value = stats['frames']['processregs'][pid]
+            #if frames > 5:
+            perc = float(value)/frames
+            print("{},{},{}".format(pid, value, frames))
+            maxperc = max(perc, maxperc)
+            minperc = min(perc, minperc)
+        print("Max percentage register calls: {}".format(maxperc))
+        print("Min percentage register calls: {}".format(minperc))
+
+        regtuples = list()
+        for lib, values in stats['frames']['libraryregs'].items():
+            for offset, count in values.items():
+                regtuples.append((lib, offset, count))
+        for libname, offset, count in sorted(regtuples, key=lambda calls: calls[2]):
+            print("{},{},{}".format(libname, offset, count))
+        print(len(stats['frames']['processframes']))
 
     def write_annotated_stack(self, f, stack_ann):
         """
