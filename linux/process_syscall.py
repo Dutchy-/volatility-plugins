@@ -37,12 +37,12 @@ class linux_process_syscall(linux_info_regs.linux_info_regs):
         syscalls = linux_check_syscall.linux_check_syscall(self._config).calculate()
         self.syscalls64 = {}
         self.syscalls32 = {}
-        for table_name, syscall, address, hooked  in syscalls:
+        for tableaddr, table_name, syscall, address, sym_name, hooked  in syscalls:
             if table_name == '64bit':
                 table = self.syscalls64
             else:
                 table = self.syscalls32
-            symbol = "HOOKED" if hooked != 0 else self.profile.get_symbol_by_address('kernel', address)
+            symbol = "{} HOOKED".format(sym_name) if hooked != 0 else sym_name
             table[syscall] = address, symbol #
 
             #print(list(self.syscalls))
